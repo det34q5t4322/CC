@@ -1,0 +1,106 @@
+
+
+-- 1. Настройка оборудования
+локальный mon = периферийный.find("монитор")
+если не mon, то ошибка ("КРИТИЧНО: Монитор не найден!") конец
+
+локьньыѹ modemName = ноль
+для _, имя в ipairs(peripheral.getNames()) скачать
+ эсли periferic.getType(имя) == "модем" и periferic.call(имя, "беспроводной") то
+ modemName = имя
+ перерыв
+ конец
+конец
+
+если имя модема то
+ rednet.open(имя модема)
+еще
+ ошибка("КРИТИЧНО: Расширенный беспроводной модем не найден!")
+конец
+
+mon.setTextScale(0,5)
+
+-- 2. Функции отрисовки интерфейса
+локальная функция drawBox(x, y, w, h, загоравок, цвет)
+ mon.setTextColor(цет)
+ mon.setCursorPos(x, y)
+ пн.запись("+". . ..строка.rep("-", ж-2)..+")
+ для i=1, h-2 сделать
+ mon.setCursorPos(x, y+i)
+ mon.write("|")
+ mon.setCursorPos(x+w-1, y+i)
+ mon.write("|")
+ конец
+ mon.setCursorPos(x, y+h-1)
+ mon.write("+"..строка.rep("-", w-2)..+")
+ mon.setCursorPos(x+2, ю)
+ пн.запись(" "..название.." ")
+конец
+
+локльняняя функция drawStat(x, y, мэтка, знячѵн, едининѸца измѼрняя, цвѵт)
+ mon.setCursorPos(x, y)
+ mon.setTextColor(цвета.серые)
+ mon.write(метка..": ")
+ mon.setTextColor(цет)
+ mon.write(val.." ". . ..единица)
+конец
+
+-- Экран ошибки при потере связи
+локальная информация drawLostSignal()
+ mon.setBackgroundColor(цвета.черные)
+ mon.clear()
+ локальный W, H = mon.getSize()
+ mon.setCursorPos(W/2 - 10, Х/2 - 1)
+ mon.setTextColor(цвета.красный)
+ пн.запись("!!! СИГНАЛ ПОТЕРЯН!!!")
+ mon.setCursorPos(W/2 - 15, Х/2 + 1)
+ mon.setTextColor(цвета.серые)
+ пн.запись("ПРОВЕРЬТЕ СОСТОЯНИЕ СВЯЗИ РЕАКТОРА")
+конец
+
+-- 3. Главный цикл приемника
+в то время как правда делают
+ -- Ждем данные максимум 3 секунды. Если нет - считаем, что связь потеряна.
+ локльььый идѵѽтѸфикар, деньное, результы = rednet.receive("MEGABASE_DATA", 3)
+    
+ если данные то
+ mon.setBackgroundColor(цвета.черные)
+ mon.clear()
+ локальный W, H = mon.getSize()
+
+ -- ЗАГОЛОВОК
+ mon.setTextColor(цвета.белый)
+ mon.setCursorPos(W/2 - 16, 2)
+ пн.запись("КОМАНМАНДИДИДИДНИИИИИЫЙЫЫЫЙ ТЕРМИНАЛ ГЛОБАЛЬНОЙ НФРАСТРУУУУКУКТУРИ")
+        
+ -- БЛОК 1: ДРАКОНИЕВОЕ ЯДРО
+ drawBox(2, 4, 35, 8, "ДРАКОНИЧЕСКОЕ ЯДРО", цвета.голубой)
+ drawStat(4, 6, "Сохранено", строка.формат("%.2f", данное.coreEnergy/10^12), "ТРФ", цвета.голубой)
+ drawStat(4, 8, "Заполнить", math.floor((data.coreEnergy/data.coreMax)*100), "%", цвета.белый)
+
+ -- БЛОК 2: ТЕРМАЛЬНЫЕ СИСТЕМЫ (Реактор и Бойлер)
+ drawBox(38, 4, 35, 8, "ТЕПЛОВАЯ СИСТЕМА", цвета.органжевый)
+ drawStat(40, 6, "Деление", data.reactorStatus и "ОНЛАЙН" или "ОФФЛАЙН", "", data.reactorStatus и цвета.лайм и цвета.красный)
+ drawStat(40, 7, "Температура", math.floor(data.reactorTemp), "K", цвета.желтый)
+ drawStat(40, 9, "Котель", math.floor(data.boilerSteam*100), "% пара", цвета.светло-голубой)
+
+ -- БЛОК 3: ПРОИЗВОДСТВО И ПОТРЕБЛЕНИЕ
+ drawBox(2, 13, 71, 6, "СЕТКА ВВОДА/ВЫВОДА ЭНЕРГИИ", цвета.пурпурный)
+ drawStat(4, 15, "Выходы турбины", math.floor(data.turbineProd), "РФ/т", цвета.лайм)
+ drawStat(4, 17, "Спрос СПС", math.floor(data.spsUsage), "РФ/т", цвета.пурпурный)
+
+ -- ФУТЕР (СТАТУС И ВРЕМЯ)
+ mon.setCursorPos(2, H-1)
+ mon.setTextColor(цвета.серые)
+ mon.write("ССЫЛКА НА ДАННИЕ: ")
+ mon.setTextColor(цвета.лайм)
+ mon.write("БЕЗОПАСНО [ПИНГ: " .. id .. "]")
+        
+ mon.setCursorPos(W-15, H-1)
+ mon.setTextColor(цвета.серые)
+ mon.write("ВРЕМЯ: " .. textutils.formatTime(os.time(), true))
+ еще
+ -- Если данные не пришли (таймаут)
+ drawLostSignal()
+ конец
+конец
