@@ -122,63 +122,40 @@ end
 -- ============================================================
 local function collectTelemetry(devs)
     local t = {}
-    t.timestamp = os.clock()
 
+    -- Энерго-ядро (Пробуем 3 варианта названия)
     local ec = devs.energyCore
     t.energyCore = {
-        stored       = getNum(ec, "getEnergyStored"),
-        max          = getNum(ec, "getMaxEnergyStored"),
-        transferRate = getNum(ec, "getTransferPerTick"),
+        stored = getNum(ec, "getEnergyStored") or getNum(ec, "getEnergy") or getNum(ec, "getStored"),
+        max    = getNum(ec, "getMaxEnergyStored") or getNum(ec, "getMaxEnergy") or getNum(ec, "getCapacity") or 1,
+        transferRate = getNum(ec, "getTransferNet") or 0,
     }
 
+    -- Реактор деления (Пробуем разные API Mekanism)
     local fr = devs.fissionReactor
     t.fissionReactor = {
-        active       = getBool(fr, "isActive"),
-        temperature  = getNum(fr,  "getTemperature"),
-        damage       = getNum(fr,  "getDamagePercent"),
-        burnRate     = getNum(fr,  "getActualBurnRate"),
-        heatCapacity = getNum(fr,  "getHeatCapacity"),
-        fuelFilled   = getNum(fr,  "getFuelFilledPercentage"),
+        active      = getBool(fr, "getStatus") or getBool(fr, "isActive"),
+        temperature = getNum(fr, "getTemperature"),
+        damage      = getNum(fr, "getDamagePercent"),
+        burnRate    = getNum(fr, "getBurnRate"),
+        fuelFilled  = getNum(fr, "getFuelFilled"),
     }
 
-    local fu = devs.fusionReactor
-    t.fusionReactor = {
-        caseTemp       = getNum(fu,  "getCaseTemperature"),
-        plasmaTemp     = getNum(fu,  "getPlasmaTemperature"),
-        ignited        = getBool(fu, "isIgnited"),
-        productionRate = getNum(fu,  "getProductionRate"),
-    }
-
-    local bo = devs.boiler
+    -- Бойлер
+    local bl = devs.boiler
     t.boiler = {
-        temperature  = getNum(bo, "getTemperature"),
-        water        = getNum(bo, "getWater"),
-        steam        = getNum(bo, "getSteam"),
-        boilRate     = getNum(bo, "getBoilRate"),
-        maxBoilRate  = getNum(bo, "getMaxBoilRate"),
+        temperature = getNum(bl, "getTemperature"),
+        water       = getNum(bl, "getWater"),
+        steam       = getNum(bl, "getSteam"),
+        boilRate    = getNum(bl, "getBoilRate"),
+        maxBoilRate = getNum(bl, "getMaxBoilRate") or 1,
     }
 
-    t.turbines = {}
-    for i, turb in ipairs(devs.turbines) do
-        t.turbines[i] = {
-            speed        = getNum(turb, "getFlowRate"),
-            production   = getNum(turb, "getProductionRate"),
-            steamFlow    = getNum(turb, "getSteamInput"),
-            maxSteamFlow = getNum(turb, "getMaxFlowRate"),
-        }
-    end
-
+    -- SPS (Антиматерия)
     local sp = devs.sps
     t.sps = {
-        inputRate  = getNum(sp, "getInputRate"),
-        outputRate = getNum(sp, "getOutputRate"),
-    }
-
-    local ct = devs.chemTank
-    t.chemTank = {
-        stored = getNum(ct, "getStored"),
-        max    = getNum(ct, "getCapacity"),
-        gas    = getStr(ct, "getGas"),
+        inputRate  = getNum(sp, "getInputRate") or getNum(sp, "getEnergyUsage"),
+        outputRate = getNum(sp, "getOutputRate") or getNum(sp, "getProductionRate"),
     }
 
     return t
