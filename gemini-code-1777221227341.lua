@@ -1,31 +1,32 @@
-местный базальт = требуется("базальт")
+local basalt = require("basalt")
 
--- Ищем монитор
-местный mon = периферийный.найти("монитор")
+-- Находим монитор и "оборачиваем" его
+local mon = peripheral.find("monitor")
 
-местный основной
-если мон затем
-    -- В новых версиях создаем фрейм именно для монитора так:
- main = basalt.addMonitor():setMonitor(mon)
-еще
-    -- Если монитора нет, рисуем на самом компе
- main = basalt.createFrame()
-конец
+-- Если монитор есть, перенаправляем весь вывод на него принудительно
+if mon then
+    term.redirect(mon)
+end
+
+-- Теперь просто создаем фрейм, он автоматически появится на мониторе
+local main = basalt.createFrame()
 
 main:addLabel()
- :setPosition(2, 2)
- :setText("СИСТЕМА СТАРТ")
- :setForeground(цвета.жельные)
+    :setPosition(2, 2)
+    :setText("СИСТЕМА СТАРТ")
+    :setForeground(colors.yellow)
 
 main:addButton()
- :setPosition(2, 4)
- :setSize(15, 3)
- :setText("ПРОВЕРКА")
- :setBackground(цвета.синий)
- :onClick(функция(себя)
- self:setText("ОК!")
- self:setBackground(цвета.зеленый)
- конец)
+    :setPosition(2, 4)
+    :setSize(15, 3)
+    :setText("ПРОВЕРКА")
+    :setBackground(colors.blue)
+    :onClick(function(self)
+        self:setText("ОК!")
+        self:setBackground(colors.green)
+    end)
 
--- Самый надежный способ запуска для новых версий
-базальт.автоОбновление()
+-- Используем обычный цикл обновления
+while true do
+    basalt.update()
+end
