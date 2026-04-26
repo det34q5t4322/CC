@@ -1,13 +1,13 @@
 -- ============================================================
---  Mekanism + Draconic Evolution Telemetry Transmitter
+--  Mekanism + Draconic Evolution  |  Telemetry Transmitter
 --  ComputerCraft 1.20.1  |  Modem channel: 99
 -- ============================================================
 
-local CHANNEL    = 99
-local INTERVAL   = 0.75   -- секунд между передачами
+local CHANNEL  = 99
+local INTERVAL = 0.75
 
 -- ============================================================
---  Утилиты
+--  Safe call helpers
 -- ============================================================
 
 local function safe(fn, ...)
@@ -35,7 +35,7 @@ local function getStr(dev, method)
 end
 
 -- ============================================================
---  Автопоиск устройств
+--  Device discovery
 -- ============================================================
 
 local function findDevices()
@@ -49,7 +49,6 @@ local function findDevices()
     devs.chemTank       = peripheral.find("ultimateChemicalTank")
     devs.modem          = peripheral.find("modem")
 
-    -- Турбин может быть несколько — собираем все
     devs.turbines = {}
     local found = table.pack(peripheral.find("turbineValve"))
     for i = 1, found.n do
@@ -60,7 +59,7 @@ local function findDevices()
 end
 
 -- ============================================================
---  Отладочный вывод найденных устройств
+--  Debug: print found devices
 -- ============================================================
 
 local function printDeviceList(devs)
@@ -73,7 +72,7 @@ local function printDeviceList(devs)
             local name = peripheral.getName(dev)
             print("  [OK] " .. label .. " -> " .. name)
         else
-            print("  [--] " .. label .. " (не найдено)")
+            print("  [--] " .. label .. " (not found)")
         end
     end
 
@@ -86,7 +85,7 @@ local function printDeviceList(devs)
     status(devs.modem,          "Wireless Modem")
 
     if #devs.turbines == 0 then
-        print("  [--] Turbines (не найдено)")
+        print("  [--] Turbines (not found)")
     else
         for i, t in ipairs(devs.turbines) do
             local name = peripheral.getName(t)
@@ -98,124 +97,122 @@ local function printDeviceList(devs)
 end
 
 -- ============================================================
---  Сбор телеметрии
+--  Telemetry collection
 -- ============================================================
 
 local function collectTelemetry(devs)
     local t = {}
     t.timestamp = os.clock()
 
-    -- --- Draconic Energy Core ---
+    -- Draconic Energy Core
     local ec = devs.energyCore
     t.energyCore = {
-        stored      = getNum(ec, "getEnergyStored"),
-        max         = getNum(ec, "getMaxEnergyStored"),
+        stored       = getNum(ec, "getEnergyStored"),
+        max          = getNum(ec, "getMaxEnergyStored"),
         transferRate = getNum(ec, "getTransferPerTick"),
     }
 
-    -- --- Mekanism Fission Reactor ---
+    -- Mekanism Fission Reactor
     local fr = devs.fissionReactor
     t.fissionReactor = {
-        active          = getBool(fr, "isActive"),
-        temperature     = getNum(fr, "getTemperature"),
-        damage          = getNum(fr, "getDamagePercent"),
-        burnRate        = getNum(fr, "getActualBurnRate"),
-        heatCapacity    = getNum(fr, "getHeatCapacity"),
-        fuelFilled      = getNum(fr, "getFuelFilledPercentage"),
+        active       = getBool(fr, "isActive"),
+        temperature  = getNum(fr,  "getTemperature"),
+        damage       = getNum(fr,  "getDamagePercent"),
+        burnRate     = getNum(fr,  "getActualBurnRate"),
+        heatCapacity = getNum(fr,  "getHeatCapacity"),
+        fuelFilled   = getNum(fr,  "getFuelFilledPercentage"),
     }
 
-    -- --- Mekanism Fusion Reactor ---
+    -- Mekanism Fusion Reactor
     local fu = devs.fusionReactor
     t.fusionReactor = {
-        caseTemp        = getNum(fu,  "getCaseTemperature"),
-        plasmaTemp      = getNum(fu,  "getPlasmaTemperature"),
-        ignited         = getBool(fu, "isIgnited"),
-        productionRate  = getNum(fu,  "getProductionRate"),
+        caseTemp     = getNum(fu,  "getCaseTemperature"),
+        plasmaTemp   = getNum(fu,  "getPlasmaTemperature"),
+        ignited      = getBool(fu, "isIgnited"),
+        productionRate = getNum(fu, "getProductionRate"),
     }
 
-    -- --- Mekanism Boiler ---
+    -- Mekanism Boiler
     local bo = devs.boiler
     t.boiler = {
-        temperature     = getNum(bo, "getTemperature"),
-        water           = getNum(bo, "getWater"),
-        steam           = getNum(bo, "getSteam"),
-        boilRate        = getNum(bo, "getBoilRate"),
-        maxBoilRate     = getNum(bo, "getMaxBoilRate"),
+        temperature  = getNum(bo, "getTemperature"),
+        water        = getNum(bo, "getWater"),
+        steam        = getNum(bo, "getSteam"),
+        boilRate     = getNum(bo, "getBoilRate"),
+        maxBoilRate  = getNum(bo, "getMaxBoilRate"),
     }
 
-    -- --- Mekanism Turbines ---
+    -- Mekanism Turbines (all found)
     t.turbines = {}
     for i, turb in ipairs(devs.turbines) do
         t.turbines[i] = {
-            speed           = getNum(turb, "getFlowRate"),
-            production      = getNum(turb, "getProductionRate"),
-            steamFlow       = getNum(turb, "getSteamInput"),
-            maxSteamFlow    = getNum(turb, "getMaxFlowRate"),
+            speed        = getNum(turb, "getFlowRate"),
+            production   = getNum(turb, "getProductionRate"),
+            steamFlow    = getNum(turb, "getSteamInput"),
+            maxSteamFlow = getNum(turb, "getMaxFlowRate"),
         }
     end
 
-    -- --- Mekanism SPS ---
-    местный sp = devs.sps
- t.sps = {
- inputRate = getNum(sp, "getInputRate"),
- outputRate = getNum(sp, "getOutputRate"),
+    -- Mekanism SPS
+    local sp = devs.sps
+    t.sps = {
+        inputRate  = getNum(sp, "getInputRate"),
+        outputRate = getNum(sp, "getOutputRate"),
     }
 
-    -- --- Химический резервуар ---
-    местный ct = devs.chemTank
- t.chemTank = {
- сохранено = getNum(ct, "getStored"),
- макс = getNum(ct, "getCapacity"),
- газ = getStr(ct, "getGas"),
+    -- Ultimate Chemical Tank
+    local ct = devs.chemTank
+    t.chemTank = {
+        stored = getNum(ct, "getStored"),
+        max    = getNum(ct, "getCapacity"),
+        gas    = getStr(ct, "getGas"),
     }
 
-    возвращаться t
-конец
+    return t
+end
 
--- ===================================================
--- Основной цикл
--- ===================================================
+-- ============================================================
+--  Main loop
+-- ============================================================
 
-местный devs = findDevices()
+local devs = findDevices()
 printDeviceList(devs)
 
-если нет devs.модем затем
- печать("[ФАТАЛ] Модем не найден. Скрипт остановлен.")
-    возвращаться
-конец
+if not devs.modem then
+    print("[FATAL] Modem not found. Stopping.")
+    return
+end
 
-devs.modem.open(КАНАЛ)
-печать("[СТАРТ] Передача запушена -> канал" .. КАНАЛ)
-печать("------------------------------------------")
+devs.modem.open(CHANNEL)
+print("[START] Transmitting on channel " .. CHANNEL)
+print("--------------------------------------------")
 
-местный галочка = 0
-пока истинный делать
- тик = тик + 1
-    местный данные = collectTelemetry(devs)
- data.tick = тик
+local tick = 0
+while true do
+    tick = tick + 1
+    local data = collectTelemetry(devs)
+    data.tick = tick
 
-    местный ок, ошибка = pcall(функция()
- devs.modem.transmit(КАНАЛ, КАНАЛ, данные)
-    конец)
+    local ok, err = pcall(function()
+        devs.modem.transmit(CHANNEL, CHANNEL, data)
+    end)
 
-    если нет хорошо затем
- печать("[ERR] Ошибка записи: " .. tostring(ошибка))
-    еще
-        -- Краткий статус в консоль
-        местный ec = data.energyCore
-        местный pct = (ec.max > 0)
-            и math.floor(ec.stored / ec.max * 100)
-            или 0
-        местный fr = data.fissionReactor
- term.clearLine()
- io.write(строка.формат(
-            "\r[#%04d] E:%d%% Fis:%s %.0f°C SPS-in:%.1f",
- тик, пкт,
- фр.активный и "НА" или "ВЫКЛ",
- фр.температура,
- data.sps.inputRate
- ))
-    конец
+    if not ok then
+        print("[ERR] Transmit failed: " .. tostring(err))
+    else
+        local ec  = data.energyCore
+        local fr  = data.fissionReactor
+        local pct = (ec.max > 0) and math.floor(ec.stored / ec.max * 100) or 0
+        term.clearLine()
+        io.write(string.format(
+            "\r[#%04d] E:%3d%%  Fis:%-3s  T:%.0fC  SPS-in:%.1f",
+            tick,
+            pct,
+            fr.active and "ON" or "OFF",
+            fr.temperature,
+            data.sps.inputRate
+        ))
+    end
 
- os.sleep(ИНТЕРВАЛ)
-конец
+    os.sleep(INTERVAL)
+end
