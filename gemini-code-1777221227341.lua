@@ -1,41 +1,16 @@
 -- ============================================================
---  CYBERPUNK ENERGY HUD  |  Basalt  |  ComputerCraft 1.20.1
---  Monitors: monitor_24 (left), monitor_22 (center), monitor_25 (floor)
---  Data source: modem ch.99 + meBridge_1
+--  CYBERPUNK ENERGY HUD  v2  |  ComputerCraft 1.20.1
+--  monitor_24=LEFT  monitor_22=CENTER  monitor_25=FLOOR
+--  Data: modem ch.99 + meBridge_1
 -- ============================================================
 
 -- ============================================================
---  Russian charset (KOI-8 style mapping for CC fonts)
--- ============================================================
-local RUS = {
-    ["\192"]="A",["\193"]="B",["\194"]="V",["\195"]="G",
-    ["\196"]="D",["\197"]="E",["\198"]="Zh",["\199"]="Z",
-    ["\200"]="I",["\201"]="J",["\202"]="K",["\203"]="L",
-    ["\204"]="M",["\205"]="N",["\206"]="O",["\207"]="P",
-    ["\208"]="R",["\209"]="S",["\210"]="T",["\211"]="U",
-    ["\212"]="F",["\213"]="Kh",["\214"]="Ts",["\215"]="Ch",
-    ["\216"]="Sh",["\217"]="Shch",["\218"]="'",["\219"]="Y",
-    ["\220"]="'",["\221"]="E",["\222"]="Yu",["\223"]="Ya",
-    ["\224"]="a",["\225"]="b",["\226"]="v",["\227"]="g",
-    ["\228"]="d",["\229"]="e",["\230"]="zh",["\231"]="z",
-    ["\232"]="i",["\233"]="j",["\234"]="k",["\235"]="l",
-    ["\236"]="m",["\237"]="n",["\238"]="o",["\239"]="p",
-    ["\240"]="r",["\241"]="s",["\242"]="t",["\243"]="u",
-    ["\244"]="f",["\245"]="kh",["\246"]="ts",["\247"]="ch",
-    ["\248"]="sh",["\249"]="shch",["\250"]="'",["\251"]="y",
-    ["\252"]="'",["\253"]="e",["\254"]="yu",["\255"]="ya",
-}
-
-local function rus(text)
-    return (text:gsub("[\192-\255]", function(c) return RUS[c] or c end))
-end
-
--- ============================================================
---  Shared state
+--  State
 -- ============================================================
 local data = {
     energyCore     = { stored=0, max=1, transferRate=0 },
-    fissionReactor = { active=false, temperature=0, damage=0, burnRate=0, fuelFilled=0 },
+    fissionReactor = { active=false, temperature=0, damage=0,
+                       burnRate=0, fuelFilled=0, heatCapacity=0 },
     fusionReactor  = { caseTemp=0, plasmaTemp=0, ignited=false, productionRate=0 },
     boiler         = { temperature=0, water=0, steam=0, boilRate=0, maxBoilRate=1 },
     turbines       = {},
@@ -43,60 +18,60 @@ local data = {
     chemTank       = { stored=0, max=1, gas="N/A" },
     tick           = 0,
 }
-
-local meData = {
-    antimatter = 0,
-    deuterium  = 0,
-    tritium    = 0,
-}
-
-local transferHistory = {}  -- ring buffer for graph
-local MAX_HISTORY = 40
-local alertActive    = false
-local dataReceived   = false  -- do not alert until first modem packet arrives
-local blinkState  = false
-local animDots    = { ".", "..", "..." }
-local animIdx     = 1
+local meData       = { antimatter=0, deuterium=0, tritium=0 }
+local history      = {}   -- transferRate ring-buffer
+local MAX_HIST     = 50
+local alertActive  = false
+local dataReceived = false
+local blink        = false
+local dotPos       = 0
+local frameCount   = 0
 
 -- ============================================================
 --  Helpers
 -- ============================================================
-local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
-local function lerp(a, b, t)    return a + (b - a) * t end
+local function clamp(v,a,b) return math.max(a, math.min(b, v)) end
 
 local function energyPct()
-    if data.energyCore.max <= 0 then return 0 end
+    if (data.energyCore.max or 0) <= 0 then return 0 end
     return data.energyCore.stored / data.energyCore.max
 end
 
 local function fmtBig(n)
-    if n >= 1e12 then return string.format("%.2fT", n/1e12)
+    n = n or 0
+    if     n >= 1e12 then return string.format("%.2fT", n/1e12)
     elseif n >= 1e9  then return string.format("%.2fG", n/1e9)
     elseif n >= 1e6  then return string.format("%.2fM", n/1e6)
     elseif n >= 1e3  then return string.format("%.1fK", n/1e3)
-    else return tostring(math.floor(n)) end
+    else                  return tostring(math.floor(n)) end
 end
 
-local function fmtTemp(t) return string.format("%.1f", t) end
+local function fmtPct(v) return string.format("%d%%", math.floor(clamp(v,0,1)*100)) end
 
-local function pushHistory(val)
-    table.insert(transferHistory, val)
-    if #transferHistory > MAX_HISTORY then
-        table.remove(transferHistory, 1)
-    end
+local function pushHistory(v)
+    table.insert(history, v)
+    if #history > MAX_HIST then table.remove(history, 1) end
+end
+
+local function reactorColor(temp)
+    if     temp < 400  then return colors.green
+    elseif temp < 1000 then return colors.yellow
+    elseif temp < 2500 then return colors.orange
+    else                    return colors.red end
 end
 
 -- ============================================================
 --  Peripherals
 -- ============================================================
 local modem    = peripheral.find("modem")
-local meBridge = peripheral.wrap("meBridge_1")
+local meBridge
+local ok, err = pcall(function() meBridge = peripheral.wrap("meBridge_1") end)
 
-local monLeft   = peripheral.wrap("monitor_24")
-local monCenter = peripheral.wrap("monitor_22")
-local monFloor  = peripheral.wrap("monitor_25")
+local monL = peripheral.wrap("monitor_24")
+local monC = peripheral.wrap("monitor_22")
+local monF = peripheral.wrap("monitor_25")
 
-for _, m in ipairs({monLeft, monCenter, monFloor}) do
+for _, m in ipairs({monL, monC, monF}) do
     if m then
         m.setTextScale(0.5)
         m.setBackgroundColor(colors.black)
@@ -104,625 +79,699 @@ for _, m in ipairs({monLeft, monCenter, monFloor}) do
     end
 end
 
-if modem then
-    modem.open(99)
-end
+if modem then modem.open(99) end
 
 -- ============================================================
---  ME Bridge query
+--  Low-level draw primitives
 -- ============================================================
-local function queryME()
-    if not meBridge then return end
-    local function getItem(name)
-        local ok, res = pcall(function() return meBridge.getItem({name=name}) end)
-        if ok and res then return res.amount or 0 end
-        return 0
-    end
-    meData.antimatter = getItem("mekanism:antimatter")
-    meData.deuterium  = getItem("mekanism:deuterium")
-    meData.tritium    = getItem("mekanism:tritium")
-end
-
--- ============================================================
---  Low-level drawing helpers (direct monitor API, no Basalt)
---  Basalt is used for the alert overlay only.
--- ============================================================
-
-local function drawBox(mon, x, y, w, h, fg, bg, label)
-    mon.setBackgroundColor(bg or colors.black)
-    mon.setTextColor(fg or colors.cyan)
-    -- top
+local function put(mon, x, y, text, fg, bg)
+    if not mon then return end
     mon.setCursorPos(x, y)
-    mon.write("\149" .. string.rep("\140", w-2) .. "\149")
-    -- sides
-    for row = y+1, y+h-2 do
-        mon.setCursorPos(x, row);   mon.write("\149")
-        mon.setCursorPos(x+w-1, row); mon.write("\149")
-    end
-    -- bottom
-    mon.setCursorPos(x, y+h-1)
-    mon.write("\149" .. string.rep("\140", w-2) .. "\149")
-    -- label
-    if label then
-        mon.setCursorPos(x+2, y)
-        mon.setBackgroundColor(bg or colors.black)
-        mon.setTextColor(colors.yellow)
-        mon.write("[ " .. label .. " ]")
-    end
-end
-
-local function drawText(mon, x, y, text, fg, bg)
-    mon.setCursorPos(x, y)
-    if bg  then mon.setBackgroundColor(bg) end
-    if fg  then mon.setTextColor(fg) end
+    if bg  then mon.setBackgroundColor(bg)  end
+    if fg  then mon.setTextColor(fg)        end
     mon.write(text)
 end
 
-local function drawBar(mon, x, y, w, pct, fgFull, fgEmpty, bg)
-    local filled = math.floor(clamp(pct, 0, 1) * w)
-    mon.setCursorPos(x, y)
-    mon.setBackgroundColor(bg or colors.black)
-    mon.setTextColor(fgFull or colors.green)
-    mon.write(string.rep("\127", filled))
-    mon.setTextColor(fgEmpty or colors.gray)
-    mon.write(string.rep("\127", w - filled))
+-- Horizontal line with single char
+local function hline(mon, x, y, w, ch, fg, bg)
+    put(mon, x, y, string.rep(ch, w), fg, bg)
 end
 
-local function drawVBar(mon, x, yTop, h, pct, fgFull, fgEmpty)
-    local filled = math.floor(clamp(pct, 0, 1) * h)
-    for row = 0, h-1 do
-        mon.setCursorPos(x, yTop + (h-1-row))
-        if row < filled then
-            mon.setTextColor(fgFull or colors.cyan)
-            mon.write("\127")
+-- Box with clean corners (no ugly E artifacts - use spaces + borders)
+-- Style A: thin line box  +---------+
+local function box(mon, x, y, w, h, fg, title)
+    fg = fg or colors.cyan
+    local bg = colors.black
+    -- corners + top
+    put(mon, x,       y, "+", fg, bg)
+    put(mon, x+1,     y, string.rep("-", w-2), fg, bg)
+    put(mon, x+w-1,   y, "+", fg, bg)
+    -- sides
+    for r = y+1, y+h-2 do
+        put(mon, x,     r, "|", fg, bg)
+        put(mon, x+w-1, r, "|", fg, bg)
+    end
+    -- bottom
+    put(mon, x,     y+h-1, "+", fg, bg)
+    put(mon, x+1,   y+h-1, string.rep("-", w-2), fg, bg)
+    put(mon, x+w-1, y+h-1, "+", fg, bg)
+    -- title
+    if title then
+        local lbl = " " .. title .. " "
+        put(mon, x+2, y, lbl, colors.yellow, bg)
+    end
+end
+
+-- Filled rectangle with a character
+local function fillRect(mon, x, y, w, h, ch, fg, bg)
+    for r = y, y+h-1 do
+        put(mon, x, r, string.rep(ch, w), fg, bg)
+    end
+end
+
+-- Progress bar  [####----]
+local function pbar(mon, x, y, w, pct, fg, bg)
+    pct = clamp(pct, 0, 1)
+    local filled = math.floor(pct * w)
+    put(mon, x, y, string.rep("\127", filled), fg or colors.cyan, colors.black)
+    put(mon, x+filled, y, string.rep("\127", w-filled), colors.gray, colors.black)
+end
+
+-- Vertical bar (bottom to top)
+local function vbar(mon, x, yBot, h, pct, fg)
+    pct = clamp(pct, 0, 1)
+    local filled = math.floor(pct * h)
+    for i = 0, h-1 do
+        local row = yBot - i
+        if i < filled then
+            put(mon, x, row, "\127", fg or colors.cyan, colors.black)
         else
-            mon.setTextColor(fgEmpty or colors.gray)
-            mon.write("|")
+            put(mon, x, row, ":", colors.gray, colors.black)
         end
     end
 end
 
-local function gridLines(mon, W, H, stepX, stepY)
-    mon.setTextColor(colors.gray)
-    mon.setBackgroundColor(colors.black)
-    for col = stepX, W, stepX do
-        for row = 1, H do
-            mon.setCursorPos(col, row)
-            mon.write("\183")
-        end
-    end
-    for row = stepY, H, stepY do
-        mon.setCursorPos(1, row)
-        mon.write(string.rep("\196", W))
-    end
+-- Small labeled value on one line
+local function kv(mon, x, y, key, val, kfg, vfg)
+    put(mon, x, y, key, kfg or colors.gray, colors.black)
+    put(mon, x + #key, y, val, vfg or colors.white, colors.black)
 end
 
 -- ============================================================
---  ALERT SYSTEM
+--  ME Bridge
 -- ============================================================
-local alertFrameCenter, alertFrameLeft, alertFrameFloor
-
-local function setupAlerts()
-    -- We use raw monitor writes for alert (simpler than Basalt frames here)
+local function queryME()
+    if not meBridge then return end
+    local function gi(name)
+        local ok2, res = pcall(function() return meBridge.getItem({name=name}) end)
+        if ok2 and res then return res.amount or 0 end
+        return 0
+    end
+    meData.antimatter = gi("mekanism:antimatter")
+    meData.deuterium  = gi("mekanism:deuterium")
+    meData.tritium    = gi("mekanism:tritium")
 end
 
+-- ============================================================
+--  ALERT
+-- ============================================================
 local function triggerAlert(active)
     alertActive = active
-    local function flashMonitor(mon)
+    if not active then return end
+    local function flash(mon)
         if not mon then return end
-        if active then
+        local W, H = mon.getSize()
+        mon.setBackgroundColor(colors.red)
+        mon.clear()
+        local msgs = {
+            "!!! CRITICAL ALERT !!!",
+            "SYSTEM INTEGRITY VIOLATED",
+            "CHECK FISSION / ENERGY CORE",
+        }
+        for i, m in ipairs(msgs) do
+            local px = math.max(1, math.floor((W-#m)/2)+1)
+            local py = math.floor(H/2) - 1 + (i-1)
+            mon.setCursorPos(px, py)
+            mon.setTextColor(i==1 and colors.yellow or colors.white)
             mon.setBackgroundColor(colors.red)
-            mon.clear()
-            local W, H = mon.getSize()
-            local lines = {
-                "!!! CRITICAL SYSTEM ALERT !!!",
-                "INTEGRITY VIOLATION DETECTED",
-                "CHECK FISSION DAMAGE / ENERGY",
-            }
-            for i, line in ipairs(lines) do
-                local px = math.max(1, math.floor((W - #line) / 2) + 1)
-                local py = math.floor(H / 2) - 1 + (i - 1)
-                mon.setCursorPos(px, py)
-                mon.setTextColor(i == 1 and colors.yellow or colors.white)
-                mon.setBackgroundColor(colors.red)
-                mon.write(line)
-            end
+            mon.write(m)
         end
     end
-    if active then
-        flashMonitor(monLeft)
-        flashMonitor(monCenter)
-        flashMonitor(monFloor)
-        local spk = peripheral.find("speaker")
-        if spk then
-            pcall(function() spk.playNote("harp", 3, 24) end)
-        end
-    end
+    flash(monL); flash(monC); flash(monF)
+    local spk = peripheral.find("speaker")
+    if spk then pcall(function() spk.playNote("harp", 3, 18) end) end
+end
+
+local function checkAlerts()
+    if not dataReceived then return end
+    local dmg = data.fissionReactor.damage or 0
+    local pct = energyPct()
+    local should = (dmg > 0) or (pct < 0.05)
+    if should ~= alertActive then triggerAlert(should) end
 end
 
 -- ============================================================
 --  CENTER MONITOR (monitor_22)
---  Energy ring + transfer graph + ME resources
+--  Energy core ring + transfer graph + ME resources
 -- ============================================================
 
--- Arc ring drawn with text chars, approximating a circle
-local ringChars = {
-    [0]="\183",[1]="\183",[2]="\186",[3]="\186",[4]="\186",
-    [5]="\186",[6]="\186",[7]="\183",[8]="\183",[9]="\183",
-}
-
-local function drawEnergyRing(mon, cx, cy, r, pct)
-    -- Draw 16-step ring using trig
-    local steps = 32
-    for i = 0, steps-1 do
-        local angle = (i / steps) * math.pi * 2 - math.pi/2
-        local px = math.floor(cx + r * math.cos(angle) * 2 + 0.5)
-        local py = math.floor(cy + r * math.sin(angle) + 0.5)
-        local filled = (i / steps) <= pct
-        mon.setCursorPos(px, py)
-        if filled then
-            mon.setTextColor(colors.cyan)
-            mon.setBackgroundColor(colors.blue)
-        else
-            mon.setTextColor(colors.gray)
-            mon.setBackgroundColor(colors.black)
+-- Draw ring of N steps around cx,cy with radius r (char-space r*2 wide, r tall)
+local function drawRing(mon, cx, cy, r, pct)
+    local N = 24
+    for i = 0, N-1 do
+        local a  = (i/N)*math.pi*2 - math.pi/2
+        local px = math.floor(cx + r*2*math.cos(a) + 0.5)
+        local py = math.floor(cy + r  *math.sin(a) + 0.5)
+        if px >= 1 and py >= 1 then
+            mon.setCursorPos(px, py)
+            if (i/N) <= pct then
+                mon.setTextColor(colors.cyan)
+                mon.setBackgroundColor(colors.blue)
+                mon.write("O")
+            else
+                mon.setTextColor(colors.gray)
+                mon.setBackgroundColor(colors.black)
+                mon.write("o")
+            end
         end
-        mon.write("\127")
     end
 end
 
-local function drawTransferGraph(mon, x, y, w, h)
-    mon.setBackgroundColor(colors.black)
-    -- frame
-    drawBox(mon, x, y, w, h, colors.cyan, colors.black, "TRANSFER/t")
-    local maxVal = 1
-    for _, v in ipairs(transferHistory) do
-        if math.abs(v) > maxVal then maxVal = math.abs(v) end
-    end
-    local graphW = w - 2
-    local graphH = h - 2
-    local midY = y + 1 + math.floor(graphH / 2)
+local function drawGraph(mon, x, y, w, h)
+    box(mon, x, y, w, h, colors.cyan, "TRANSFER/t")
+    local maxV = 1
+    for _, v in ipairs(history) do if math.abs(v) > maxV then maxV = math.abs(v) end end
+    local gw = w - 2
+    local gh = h - 2
+    local mid = y + 1 + math.floor(gh/2)
     -- zero line
-    mon.setTextColor(colors.gray)
-    for col = x+1, x+w-2 do
-        mon.setCursorPos(col, midY)
-        mon.write("\196")
+    for c = x+1, x+w-2 do
+        put(mon, c, mid, "-", colors.gray, colors.black)
     end
-    -- data
-    local startIdx = math.max(1, #transferHistory - graphW + 1)
-    for i = startIdx, #transferHistory do
-        local val = transferHistory[i]
-        local col = x + 1 + (i - startIdx)
-        local norm = val / maxVal
-        local barH = math.abs(math.floor(norm * (graphH/2)))
-        if val >= 0 then
-            mon.setTextColor(colors.green)
-            for row = 0, barH-1 do
-                mon.setCursorPos(col, midY - row)
-                mon.write("\127")
-            end
+    -- bars
+    local start = math.max(1, #history - gw + 1)
+    for i = start, #history do
+        local v   = history[i]
+        local col = x + 1 + (i - start)
+        local norm = math.abs(v)/maxV
+        local bh  = math.max(1, math.floor(norm * (gh/2)))
+        local fg  = v >= 0 and colors.lime or colors.red
+        if v >= 0 then
+            for rr = 0, bh-1 do put(mon, col, mid-rr, "|", fg, colors.black) end
         else
-            mon.setTextColor(colors.red)
-            for row = 0, barH-1 do
-                mon.setCursorPos(col, midY + row)
-                mon.write("\127")
-            end
+            for rr = 0, bh-1 do put(mon, col, mid+rr, "|", fg, colors.black) end
         end
     end
-    -- current value label
-    local cur = transferHistory[#transferHistory] or 0
-    local curStr = (cur >= 0 and "+" or "") .. fmtBig(cur) .. "/t"
-    drawText(mon, x+2, y+1, curStr, cur >= 0 and colors.green or colors.red, colors.black)
-end
-
-local function drawMESection(mon, x, y, w)
-    drawBox(mon, x, y, w, 8, colors.cyan, colors.black, rus("\202\240\232\242\232\247\229\241\234\232\229 \240\229\241\243\240\241\251"))
-    local items = {
-        { name="Antimatter", val=meData.antimatter, max=1e6,  col=colors.magenta },
-        { name="Deuterium",  val=meData.deuterium,  max=1e7,  col=colors.cyan    },
-        { name="Tritium",    val=meData.tritium,    max=1e7,  col=colors.lime    },
-    }
-    for i, item in ipairs(items) do
-        local row = y + 1 + (i-1)*2
-        drawText(mon, x+2, row, item.name .. ":", colors.yellow, colors.black)
-        drawText(mon, x+2+#item.name+2, row, fmtBig(item.val), item.col, colors.black)
-        local pct = clamp(item.val / item.max, 0, 1)
-        drawBar(mon, x+2, row+1, w-4, pct, item.col, colors.gray, colors.black)
-    end
+    -- current label
+    local cur = history[#history] or 0
+    local sign = cur >= 0 and "+" or ""
+    put(mon, x+2, y+1, sign..fmtBig(cur).."/t", cur>=0 and colors.lime or colors.red, colors.black)
 end
 
 local function renderCenter()
-    local mon = monCenter
+    local mon = monC
     if not mon then return end
     local W, H = mon.getSize()
     mon.setBackgroundColor(colors.black)
     mon.clear()
-    gridLines(mon, W, H, 8, 4)
 
-    -- Title
-    drawText(mon, 2, 1, rus("\255\196\208\206 \255\206\224\228\240\238"), colors.cyan, colors.black)
-    drawText(mon, W-8, 1, string.format("%02d:%02d", math.floor(os.clock()/60), math.floor(os.clock())%60), colors.gray, colors.black)
+    -- Header bar
+    fillRect(mon, 1, 1, W, 1, " ", colors.black, colors.black)
+    put(mon, 2, 1, "ENERGY CORE", colors.cyan, colors.black)
+    put(mon, W-9, 1, os.date and os.date("!%H:%M:%S") or "00:00:00", colors.gray, colors.black)
 
+    -- Decorative corner accents (no full grid - just corners)
+    put(mon, 1,   1,   "/", colors.blue, colors.black)
+    put(mon, W,   1,   "\\",colors.blue, colors.black)
+    put(mon, 1,   H,   "\\",colors.blue, colors.black)
+    put(mon, W,   H,   "/", colors.blue, colors.black)
+
+    -- Ring
     local pct = energyPct()
-    local cx = math.floor(W * 0.35)
-    local cy = math.floor(H * 0.42)
-    local r  = math.min(cx, cy) - 3
+    local cx  = math.floor(W * 0.28)
+    local cy  = math.floor(H * 0.38)
+    local r   = math.min(cx-2, math.floor(H*0.25))
+    drawRing(mon, cx, cy, r, pct)
 
-    -- Energy ring
-    drawEnergyRing(mon, cx, cy, r, pct)
+    -- Center stats
+    local pctStr = fmtPct(pct)
+    put(mon, cx - math.floor(#pctStr/2), cy-1, pctStr, colors.white, colors.black)
+    local stored = fmtBig(data.energyCore.stored)
+    put(mon, cx - math.floor(#stored/2), cy, stored, colors.cyan, colors.black)
+    -- blink dot
+    if blink then put(mon, cx, cy+1, "*", colors.yellow, colors.black) end
 
-    -- Center text inside ring
-    local pctStr = string.format("%d%%", math.floor(pct * 100))
-    drawText(mon, cx - math.floor(#pctStr/2), cy - 1, pctStr, colors.white, colors.black)
-    drawText(mon, cx - 3, cy, fmtBig(data.energyCore.stored), colors.cyan, colors.black)
-    local blinkChar = blinkState and "\4" or " "
-    drawText(mon, cx, cy+1, blinkChar, colors.yellow, colors.black)
+    -- Charge bar below ring
+    local barY = cy + r + 2
+    put(mon, 2, barY, "PWR", colors.gray, colors.black)
+    pbar(mon, 6, barY, math.floor(W*0.45)-6, pct,
+         pct > 0.5 and colors.cyan or (pct > 0.2 and colors.yellow or colors.red))
 
-    -- Transfer graph right side
-    local gx = cx + r*2 + 3
-    local gw = W - gx - 1
-    local gh = math.floor(H * 0.5)
-    if gw > 8 then
-        drawTransferGraph(mon, gx, 2, gw, gh)
+    -- Transfer rate big display
+    local tr = data.energyCore.transferRate or 0
+    local trStr = (tr >= 0 and "+" or "") .. fmtBig(tr) .. "/t"
+    put(mon, 2, barY+1, "NET ", colors.gray, colors.black)
+    put(mon, 6, barY+1, trStr, tr >= 0 and colors.lime or colors.red, colors.black)
+
+    -- Graph (right side)
+    local gx = math.floor(W*0.55)
+    local gw = W - gx
+    local gh = math.floor(H*0.45)
+    if gw > 10 then drawGraph(mon, gx, 2, gw, gh) end
+
+    -- Separator
+    local sepY = math.floor(H*0.6)
+    hline(mon, 1, sepY, W, "-", colors.blue, colors.black)
+    put(mon, 3, sepY, "[ ME RESOURCES ]", colors.yellow, colors.black)
+
+    -- ME resources
+    local items = {
+        { label="Antimatter", val=meData.antimatter, max=1e6,  fg=colors.magenta },
+        { label="Deuterium",  val=meData.deuterium,  max=1e7,  fg=colors.cyan    },
+        { label="Tritium",    val=meData.tritium,    max=1e7,  fg=colors.lime    },
+    }
+    for i, item in ipairs(items) do
+        local ry = sepY + 1 + (i-1)*3
+        put(mon, 2, ry, item.label, colors.gray, colors.black)
+        put(mon, 2+#item.label+1, ry, fmtBig(item.val), item.fg, colors.black)
+        pbar(mon, 2, ry+1, math.floor(W*0.4), clamp(item.val/item.max,0,1), item.fg)
+        -- right side: SPS
+        if i == 1 then
+            kv(mon, gx, ry,   "SPS IN  ", fmtBig(data.sps.inputRate),  colors.gray, colors.purple)
+            kv(mon, gx, ry+1, "SPS OUT ", fmtBig(data.sps.outputRate), colors.gray, colors.purple)
+        end
     end
 
-    -- ME section bottom
-    local meY = math.floor(H * 0.65)
-    drawMESection(mon, 2, meY, W - 3)
-
-    -- SPS info
-    drawText(mon, 2, H-2, "SPS in:" .. fmtBig(data.sps.inputRate) .. " out:" .. fmtBig(data.sps.outputRate), colors.purple, colors.black)
+    -- Status footer
+    if not dataReceived then
+        local wStr = "[ WAITING FOR TRANSMITTER... ]"
+        put(mon, math.floor((W-#wStr)/2)+1, H, wStr, colors.yellow, colors.black)
+    else
+        put(mon, 2, H, "LIVE #"..data.tick, colors.green, colors.black)
+    end
 end
 
 -- ============================================================
 --  LEFT MONITOR (monitor_24)
---  Fission + Fusion + Boiler + Turbines
+--  Fission | Fusion | Boiler | Turbines
 -- ============================================================
 
-local noiseChars = {"\7","\4","\5","\6","\15","\24","\25","\26","\27"}
-
-local function plasmaNoiseEffect(mon, cx, cy, r)
-    if data.fusionReactor.plasmaTemp <= 0 then return end
-    for _ = 1, 4 do
-        local angle = math.random() * math.pi * 2
-        local dist  = math.random(1, r)
-        local px = cx + math.floor(dist * math.cos(angle) * 2)
-        local py = cy + math.floor(dist * math.sin(angle))
-        local nc = noiseChars[math.random(#noiseChars)]
-        mon.setCursorPos(px, py)
-        mon.setTextColor(colors.orange)
-        mon.setBackgroundColor(colors.black)
-        mon.write(nc)
-    end
-end
-
-local function drawFissionPanel(mon, x, y, w, h)
-    local fr = data.fissionReactor
-    local borderCol = fr.active and colors.green or colors.gray
-    drawBox(mon, x, y, w, h, borderCol, colors.black, "FISSION REACTOR")
-
-    local row = y + 1
-    -- Status
-    local statusStr = fr.active and "[ACTIVE]" or "[OFFLINE]"
-    drawText(mon, x+2, row, "Status: " .. statusStr, fr.active and colors.lime or colors.red, colors.black)
-    row = row + 1
-
-    -- Temperature
-    local blink = blinkState and "\4" or "\5"
-    drawText(mon, x+2, row, "Temp: " .. fmtTemp(fr.temperature) .. "K " .. blink, colors.orange, colors.black)
-    row = row + 1
-
-    -- Damage (blink red if > 0)
-    local dmgCol = fr.damage > 0 and (blinkState and colors.red or colors.orange) or colors.lime
-    drawText(mon, x+2, row, "Damage: " .. string.format("%.2f%%", fr.damage), dmgCol, colors.black)
-    row = row + 1
-
-    -- Burn rate with intensity bar
-    drawText(mon, x+2, row, "Burn: " .. string.format("%.2f", fr.burnRate) .. "/t", colors.yellow, colors.black)
-    row = row + 1
-    drawBar(mon, x+2, row, w-4, clamp(fr.burnRate/10, 0, 1), colors.red, colors.gray, colors.black)
-    row = row + 1
-
-    -- Fuel
-    drawText(mon, x+2, row, "Fuel: " .. string.format("%.1f%%", fr.fuelFilled*100), colors.cyan, colors.black)
-    drawBar(mon, x+2, row+1, w-4, fr.fuelFilled, colors.yellow, colors.gray, colors.black)
-end
-
-local function drawFusionPanel(mon, x, y, w, h)
-    local fu = data.fusionReactor
-    local borderCol = fu.ignited and colors.orange or colors.gray
-    drawBox(mon, x, y, w, h, borderCol, colors.black, "FUSION REACTOR")
-
-    local row = y + 1
-    local statusStr = fu.ignited and "[IGNITED]" or "[COLD]"
-    drawText(mon, x+2, row, statusStr, fu.ignited and colors.orange or colors.cyan, colors.black)
-    row = row + 1
-
-    drawText(mon, x+2, row, "Plasma: " .. fmtBig(fu.plasmaTemp) .. "K", colors.red, colors.black)
-    row = row + 1
-    drawText(mon, x+2, row, "Case:   " .. fmtBig(fu.caseTemp)   .. "K", colors.orange, colors.black)
-    row = row + 1
-    drawText(mon, x+2, row, "Output: " .. fmtBig(fu.productionRate), colors.lime, colors.black)
-    row = row + 1
-
-    -- Plasma noise effect
-    if fu.plasmaTemp > 0 then
-        local cx = x + math.floor(w/2)
-        local cy = y + math.floor(h/2) + 1
-        plasmaNoiseEffect(mon, cx, cy, math.floor(math.min(w,h)/4))
-    end
-end
-
-local function drawBoilerPanel(mon, x, y, w, h)
-    local bo = data.boiler
-    drawBox(mon, x, y, w, h, colors.blue, colors.black, "BOILER")
-
-    local row = y + 1
-    drawText(mon, x+2, row, "Temp:  " .. fmtTemp(bo.temperature) .. "K", colors.cyan, colors.black)
-    row = row + 1
-    drawText(mon, x+2, row, "Water: " .. fmtBig(bo.water) .. " mB", colors.blue, colors.black)
-    row = row + 1
-    drawText(mon, x+2, row, "Steam: " .. fmtBig(bo.steam) .. " mB", colors.white, colors.black)
-    row = row + 1
-    local maxB = math.max(bo.maxBoilRate, 1)
-    drawText(mon, x+2, row, "Boil:  " .. fmtBig(bo.boilRate) .. "/" .. fmtBig(bo.maxBoilRate), colors.orange, colors.black)
-    drawBar(mon, x+2, row+1, w-4, clamp(bo.boilRate/maxB, 0, 1), colors.orange, colors.gray, colors.black)
-end
-
-local function drawTurbinePanel(mon, x, y, w, h)
-    drawBox(mon, x, y, w, h, colors.cyan, colors.black, "TURBINES")
-    local turbCount = math.max(#data.turbines, 1)
-    local colW = math.floor((w-2) / turbCount)
-
-    for i, turb in ipairs(data.turbines) do
-        local tx = x + 1 + (i-1)*colW
-        local maxFlow = math.max(turb.maxSteamFlow, 1)
-        local pct = clamp(turb.steamFlow / maxFlow, 0, 1)
-
-        -- Vertical steam bar
-        local barH = h - 5
-        drawVBar(mon, tx + math.floor(colW/2), y+2, barH, pct, colors.cyan, colors.gray)
-
-        -- Label
-        drawText(mon, tx, y+h-3, string.format("T%d", i), colors.yellow, colors.black)
-        drawText(mon, tx, y+h-2, fmtBig(turb.steamFlow), colors.cyan, colors.black)
-        drawText(mon, tx, y+h-1, fmtBig(turb.production), colors.lime, colors.black)
-    end
-
-    -- Header labels
-    drawText(mon, x+2, y+h-3, "         STEAM   PWR", colors.gray, colors.black)
+local noisePool = {"+","x","*","~","^","`","'","."}
+local function noiseAt(mon, x, y)
+    if x < 1 or y < 1 then return end
+    local nc = noisePool[math.random(#noisePool)]
+    put(mon, x, y, nc, colors.orange, colors.black)
 end
 
 local function renderLeft()
-    local mon = monLeft
+    local mon = monL
     if not mon then return end
     local W, H = mon.getSize()
     mon.setBackgroundColor(colors.black)
     mon.clear()
-    gridLines(mon, W, H, 6, 3)
 
-    drawText(mon, 2, 1, rus("\210\229\235\229\236\229\242\240\232\255 \240\229\224\234\242\238\240\238\226"), colors.cyan, colors.black)
+    -- Header
+    put(mon, 2, 1, "REACTOR TELEMETRY", colors.cyan, colors.black)
+    put(mon, W-7, 1, dataReceived and "* LIVE" or "* WAIT", dataReceived and colors.lime or colors.yellow, colors.black)
 
-    local halfH    = math.floor(H / 2)
-    local halfW    = math.floor(W / 2)
-    local panelH   = halfH - 2
+    local halfW  = math.floor(W/2)
+    local topH   = math.floor(H*0.52)
+    local botH   = H - topH - 1
 
-    drawFissionPanel(mon, 1,       3,        halfW,   panelH)
-    drawFusionPanel (mon, halfW+1, 3,        W-halfW, panelH)
-    drawBoilerPanel (mon, 1,       halfH+1,  halfW,   panelH-2)
-    drawTurbinePanel(mon, halfW+1, halfH+1,  W-halfW, panelH-2)
+    -- ---- FISSION (top-left) ----
+    local fr = data.fissionReactor
+    local frBorder = fr.active and colors.lime or colors.gray
+    box(mon, 1, 2, halfW-1, topH, frBorder, "FISSION")
 
-    -- Bottom status bar
-    drawText(mon, 2, H, animDots[animIdx] .. " LIVE", colors.green, colors.black)
+    local frow = 3
+    local stStr = fr.active and "ACTIVE" or "OFFLINE"
+    put(mon, 3, frow, "Status: ", colors.gray, colors.black)
+    put(mon, 11, frow, stStr, fr.active and colors.lime or colors.red, colors.black)
+    frow = frow + 1
+
+    put(mon, 3, frow, "Temp:   ", colors.gray, colors.black)
+    local tc = fr.temperature > 800 and colors.red or fr.temperature > 400 and colors.yellow or colors.cyan
+    put(mon, 11, frow, string.format("%.0fK", fr.temperature), tc, colors.black)
+    if blink then put(mon, 11+#string.format("%.0fK", fr.temperature)+1, frow, "!", tc, colors.black) end
+    frow = frow + 1
+
+    -- Damage - blink red if > 0
+    put(mon, 3, frow, "Damage: ", colors.gray, colors.black)
+    local dmgFg = (fr.damage > 0) and (blink and colors.red or colors.orange) or colors.lime
+    put(mon, 11, frow, string.format("%.2f%%", fr.damage), dmgFg, colors.black)
+    frow = frow + 1
+
+    put(mon, 3, frow, "Burn:   ", colors.gray, colors.black)
+    put(mon, 11, frow, string.format("%.2f/t", fr.burnRate), colors.yellow, colors.black)
+    frow = frow + 1
+    pbar(mon, 3, frow, halfW-5, clamp(fr.burnRate/10,0,1), colors.orange)
+    frow = frow + 1
+
+    put(mon, 3, frow, "Fuel:   ", colors.gray, colors.black)
+    put(mon, 11, frow, fmtPct(fr.fuelFilled), colors.cyan, colors.black)
+    frow = frow + 1
+    pbar(mon, 3, frow, halfW-5, fr.fuelFilled, colors.yellow)
+
+    -- ---- FUSION (top-right) ----
+    local fu = data.fusionReactor
+    local fuBorder = fu.ignited and colors.orange or colors.gray
+    box(mon, halfW+1, 2, W-halfW, topH, fuBorder, "FUSION")
+
+    local urow = 3
+    put(mon, halfW+3, urow, fu.ignited and "IGNITED" or "COLD", fu.ignited and colors.orange or colors.cyan, colors.black)
+    urow = urow + 1
+
+    kv(mon, halfW+3, urow, "Plasma: ", fmtBig(fu.plasmaTemp).."K", colors.gray,
+       fu.plasmaTemp > 0 and colors.red or colors.cyan)
+    urow = urow + 1
+    kv(mon, halfW+3, urow, "Case:   ", fmtBig(fu.caseTemp).."K", colors.gray, colors.orange)
+    urow = urow + 1
+    kv(mon, halfW+3, urow, "Output: ", fmtBig(fu.productionRate), colors.gray, colors.lime)
+    urow = urow + 1
+
+    -- Plasma noise effect
+    if fu.plasmaTemp > 0 then
+        local ncx = halfW + math.floor((W-halfW)/2)
+        local ncy = urow + 2
+        for _ = 1, 5 do
+            noiseAt(mon, ncx + math.random(-4,4), ncy + math.random(-1,2))
+        end
+        put(mon, ncx-1, ncy, "~PLASMA~", colors.red, colors.black)
+    end
+
+    -- Separator
+    local sepRow = topH + 2
+    hline(mon, 1, sepRow, W, "-", colors.blue, colors.black)
+
+    -- ---- BOILER (bottom-left) ----
+    local bo = data.boiler
+    box(mon, 1, sepRow+1, halfW-1, botH-1, colors.blue, "BOILER")
+
+    local brow = sepRow + 2
+    kv(mon, 3, brow,   "Temp:  ", string.format("%.0fK", bo.temperature), colors.gray, colors.cyan)
+    brow = brow + 1
+    kv(mon, 3, brow,   "Water: ", fmtBig(bo.water).."mB",  colors.gray, colors.blue)
+    brow = brow + 1
+    kv(mon, 3, brow,   "Steam: ", fmtBig(bo.steam).."mB",  colors.gray, colors.white)
+    brow = brow + 1
+    local maxB = math.max(bo.maxBoilRate, 1)
+    kv(mon, 3, brow,   "Boil:  ", fmtBig(bo.boilRate).."/"..fmtBig(bo.maxBoilRate), colors.gray, colors.orange)
+    brow = brow + 1
+    pbar(mon, 3, brow, halfW-5, clamp(bo.boilRate/maxB,0,1), colors.orange)
+
+    -- ---- TURBINES (bottom-right) ----
+    box(mon, halfW+1, sepRow+1, W-halfW, botH-1, colors.cyan, "TURBINES")
+
+    local turbCount = #data.turbines
+    if turbCount == 0 then
+        put(mon, halfW+3, sepRow+3, "No turbines", colors.gray, colors.black)
+    else
+        local colW = math.floor((W-halfW-2) / turbCount)
+        local barH = botH - 6
+        for i, turb in ipairs(data.turbines) do
+            local tx  = halfW + 2 + (i-1)*colW
+            local pct = clamp((turb.steamFlow or 0)/math.max(turb.maxSteamFlow or 1, 1), 0, 1)
+            -- label
+            put(mon, tx, sepRow+2, "T"..i, colors.yellow, colors.black)
+            -- vertical bar
+            vbar(mon, tx, sepRow + 2 + barH, barH, pct, colors.cyan)
+            -- values below
+            put(mon, tx, H-2, fmtBig(turb.steamFlow or 0), colors.cyan, colors.black)
+            put(mon, tx, H-1, fmtBig(turb.production or 0), colors.lime, colors.black)
+        end
+        put(mon, halfW+3, H-3, "STEAM  PWR", colors.gray, colors.black)
+    end
 end
 
 -- ============================================================
 --  FLOOR MONITOR (monitor_25)
---  Interactive base map with animated energy lines
+--  Beautiful static base map with live status overlays
 -- ============================================================
 
-local dotPos = 0  -- animation ticker
-
-local function drawMapLine(mon, x1, y1, x2, y2, col)
-    -- Bresenham line
-    local dx = math.abs(x2-x1)
-    local dy = math.abs(y2-y1)
-    local sx = x1 < x2 and 1 or -1
-    local sy = y1 < y2 and 1 or -1
-    local err = dx - dy
-    local x, y = x1, y1
-    mon.setTextColor(col or colors.gray)
-    mon.setBackgroundColor(colors.black)
-    while true do
-        mon.setCursorPos(x, y)
-        mon.write("\183")
-        if x == x2 and y == y2 then break end
-        local e2 = 2*err
-        if e2 > -dy then err = err - dy; x = x + sx end
-        if e2 < dx  then err = err + dx; y = y + sy end
+-- Draw a labeled zone box
+local function zoneBox(mon, x, y, w, h, fg, bg, label, sub)
+    -- fill
+    for r = y, y+h-1 do
+        mon.setCursorPos(x, r)
+        mon.setBackgroundColor(bg)
+        mon.write(string.rep(" ", w))
     end
-end
-
-local function drawAnimDot(mon, x1, y1, x2, y2, pct, col)
-    local px = math.floor(x1 + (x2-x1)*pct)
-    local py = math.floor(y1 + (y2-y1)*pct)
-    if px >= 1 and py >= 1 then
-        mon.setCursorPos(px, py)
-        mon.setTextColor(col or colors.white)
-        mon.setBackgroundColor(colors.black)
-        mon.write("\4")
+    -- border
+    mon.setBackgroundColor(bg)
+    mon.setTextColor(fg)
+    mon.setCursorPos(x, y);     mon.write("+" .. string.rep("-", w-2) .. "+")
+    for r = y+1, y+h-2 do
+        mon.setCursorPos(x, r);     mon.write("|")
+        mon.setCursorPos(x+w-1, r); mon.write("|")
     end
-end
-
-local function drawSquare(mon, x, y, w, h, fg, bg, label)
-    for row = y, y+h-1 do
-        for col = x, x+w-1 do
-            mon.setCursorPos(col, row)
-            mon.setBackgroundColor(bg or colors.black)
-            mon.setTextColor(fg or colors.white)
-            mon.write(" ")
-        end
-    end
+    mon.setCursorPos(x, y+h-1); mon.write("+" .. string.rep("-", w-2) .. "+")
+    -- label
     if label then
-        mon.setCursorPos(x + math.floor((w-#label)/2), y + math.floor(h/2))
-        mon.setTextColor(fg or colors.white)
-        mon.setBackgroundColor(bg or colors.black)
+        local lx = x + math.floor((w-#label)/2)
+        mon.setCursorPos(lx, y + math.floor(h/2) - (sub and 1 or 0))
+        mon.setBackgroundColor(bg)
+        mon.setTextColor(fg)
         mon.write(label)
     end
+    if sub then
+        local sx = x + math.floor((w-#sub)/2)
+        mon.setCursorPos(sx, y + math.floor(h/2))
+        mon.setBackgroundColor(bg)
+        mon.setTextColor(colors.white)
+        mon.write(sub)
+    end
 end
 
-local function reactorColor(temp)
-    if temp < 500  then return colors.green
-    elseif temp < 1200 then return colors.yellow
-    elseif temp < 3000 then return colors.orange
-    else return colors.red end
+-- Draw a pipe/cable line (horizontal or vertical)
+local function pipe(mon, x1, y1, x2, y2, fg)
+    mon.setTextColor(fg or colors.gray)
+    mon.setBackgroundColor(colors.black)
+    if y1 == y2 then
+        -- horizontal
+        local xA, xB = math.min(x1,x2), math.max(x1,x2)
+        for c = xA, xB do
+            mon.setCursorPos(c, y1)
+            mon.write("=")
+        end
+    elseif x1 == x2 then
+        -- vertical
+        local yA, yB = math.min(y1,y2), math.max(y1,y2)
+        for r = yA, yB do
+            mon.setCursorPos(x1, r)
+            mon.write(":")
+        end
+    end
+end
+
+-- Animated energy packet running along a line
+local function energyDot(mon, x1, y1, x2, y2, phase, fg)
+    local steps
+    if y1 == y2 then
+        steps = math.abs(x2-x1)+1
+        local idx  = math.floor(phase * steps) % steps
+        local px   = math.min(x1,x2) + idx
+        put(mon, px, y1, ">", fg or colors.yellow, colors.black)
+    else
+        steps = math.abs(y2-y1)+1
+        local idx  = math.floor(phase * steps) % steps
+        local py   = math.min(y1,y2) + idx
+        put(mon, x1, py, "v", fg or colors.yellow, colors.black)
+    end
 end
 
 local function renderFloor()
-    local mon = monFloor
+    local mon = monF
     if not mon then return end
     local W, H = mon.getSize()
     mon.setBackgroundColor(colors.black)
     mon.clear()
-    gridLines(mon, W, H, 10, 5)
+
+    -- ---- Outer platform border ----
+    mon.setTextColor(colors.blue)
+    mon.setBackgroundColor(colors.black)
+    mon.setCursorPos(1,1); mon.write("/" .. string.rep("=", W-2) .. "\\")
+    for r = 2, H-1 do
+        mon.setCursorPos(1,r); mon.write("|")
+        mon.setCursorPos(W,r); mon.write("|")
+    end
+    mon.setCursorPos(1,H); mon.write("\\" .. string.rep("=", W-2) .. "/")
 
     -- Title
-    drawText(mon, 2, 1, rus("\202\224\240\242\224 \225\224\231\251"), colors.cyan, colors.black)
+    put(mon, 3, 1, " BASE MAP v2.0 ", colors.cyan, colors.black)
+    put(mon, W-12, 1, " SECTOR MAP ", colors.blue, colors.black)
 
-    -- Platform outline
-    local padX, padY = 3, 3
-    local padW, padH = W-4, H-4
-    drawBox(mon, padX, padY, padW, padH, colors.blue, colors.black, nil)
+    -- ---- Zone layout ----
+    -- We lay out zones proportionally to W,H
+    -- Center-left: Energy Core
+    -- Top-right: Fission + Fusion side by side
+    -- Bottom-left: Boiler
+    -- Bottom-right: Turbines x2
+    -- Far right: SPS
+    -- Center: pipes
 
-    -- Sector dividers
-    local midX = padX + math.floor(padW/2)
-    local midY = padY + math.floor(padH/2)
-    for row = padY+1, padY+padH-2 do
-        mon.setCursorPos(midX, row)
-        mon.setTextColor(colors.gray)
-        mon.write("\179")
-    end
-    for col = padX+1, padX+padW-2 do
-        mon.setCursorPos(col, midY)
-        mon.setTextColor(colors.gray)
-        mon.write("\196")
-    end
+    local pct  = energyPct()
+    local coreBg = pct > 0.7 and colors.blue or (pct > 0.3 and colors.cyan or colors.gray)
+    local coreFg = colors.white
 
-    -- Energy core (center) - brightness depends on charge
-    local pct = energyPct()
-    local coreCol = pct > 0.6 and colors.blue or (pct > 0.2 and colors.cyan or colors.gray)
-    local coreBg  = pct > 0.8 and colors.blue or colors.black
-    local coreCX  = midX - 4
-    local coreCY  = midY - 2
-    drawSquare(mon, coreCX, coreCY, 8, 4, colors.white, coreBg, "CORE")
-    drawText(mon, coreCX+1, coreCY+2, string.format("%d%%", math.floor(pct*100)), coreCol, coreBg)
+    -- Calculate zone positions
+    local coreX = math.floor(W*0.38)
+    local coreY = math.floor(H*0.35)
+    local coreW = 10
+    local coreH = 5
 
-    -- Fission reactor (top-right quadrant)
     local frTemp = data.fissionReactor.temperature
-    local frCol  = reactorColor(frTemp)
-    local frX, frY = padX + padW - 12, padY + 2
-    drawSquare(mon, frX, frY, 8, 3, colors.black, frCol, "FISS")
-    drawText(mon, frX+1, frY+2, fmtBig(frTemp), colors.white, frCol)
-
-    -- Fusion reactor (top-left quadrant)
     local fuTemp = data.fusionReactor.caseTemp
-    local fuCol  = reactorColor(fuTemp)
-    local fuX, fuY = padX + 2, padY + 2
-    drawSquare(mon, fuX, fuY, 8, 3, colors.black, fuCol, "FUSI")
-    drawText(mon, fuX+1, fuY+2, fmtBig(fuTemp), colors.white, fuCol)
 
-    -- Boiler (bottom-left)
-    local boX, boY = padX + 2, padY + padH - 6
-    drawSquare(mon, boX, boY, 8, 3, colors.white, colors.blue, "BOIL")
+    local fisX = math.floor(W*0.62)
+    local fisY = math.floor(H*0.12)
+    local fisW = 10
+    local fisH = 4
+    local fisBg = reactorColor(frTemp)
+    local fisFg = colors.black
 
-    -- Turbines (bottom-right)
-    for i = 1, math.min(#data.turbines, 3) do
-        local tX = padX + padW - 10 + (i-1)*3
-        local tY = padY + padH - 5
-        drawSquare(mon, tX, tY, 2, 2, colors.black, colors.cyan, "T")
-    end
+    local fuX = math.floor(W*0.77)
+    local fuY = math.floor(H*0.12)
+    local fuW = 10
+    local fuH = 4
+    local fuBg = reactorColor(fuTemp)
+    local fuFg = colors.black
 
-    -- ---- Animated connection lines ----
-    local coreAnchorX = coreCX + 4
-    local coreAnchorY = coreCY + 2
+    local boX = math.floor(W*0.10)
+    local boY = math.floor(H*0.62)
+    local boW = 9
+    local boH = 4
 
-    -- Core <-> Fission
-    drawMapLine(mon, coreAnchorX, coreAnchorY, frX, frY+1, colors.gray)
-    local dp1 = ((dotPos % 20) / 20)
-    drawAnimDot(mon, coreAnchorX, coreAnchorY, frX, frY+1, dp1, colors.yellow)
+    local t1X = math.floor(W*0.55)
+    local t1Y = math.floor(H*0.65)
+    local t2X = math.floor(W*0.70)
+    local t2Y = math.floor(H*0.65)
+    local tW  = 8
+    local tH  = 4
+
+    local spsX = math.floor(W*0.87)
+    local spsY = math.floor(H*0.38)
+    local spsW = 8
+    local spsH = 4
+
+    -- ---- Draw pipes first (behind zones) ----
+    -- Core <-> Fission (horizontal then vertical)
+    local coreMX = coreX + coreW - 1
+    local coreMY = coreY + math.floor(coreH/2)
+    local fisMX  = fisX
+    local fisMY  = fisY + math.floor(fisH/2)
+    pipe(mon, coreMX, coreMY, fisMX, coreMY, colors.gray)   -- horizontal segment
+    pipe(mon, fisMX,  coreMY, fisMX, fisMY,  colors.gray)   -- vertical segment
 
     -- Core <-> Fusion
-    drawMapLine(mon, coreAnchorX, coreAnchorY, fuX+8, fuY+1, colors.gray)
-    local dp2 = (((dotPos+7) % 20) / 20)
-    drawAnimDot(mon, coreAnchorX, coreAnchorY, fuX+8, fuY+1, dp2, colors.orange)
+    local fuMX = fuX
+    local fuMY = fuY + math.floor(fuH/2)
+    pipe(mon, coreMX+1, coreMY-1, fuMX, fuMY, colors.gray)
 
-    -- Boiler -> Core
-    drawMapLine(mon, boX+4, boY, coreAnchorX, coreAnchorY, colors.gray)
-    local dp3 = (((dotPos+13) % 20) / 20)
-    drawAnimDot(mon, boX+4, boY, coreAnchorX, coreAnchorY, dp3, colors.cyan)
+    -- Boiler -> Core (steam line)
+    local boMX = boX + boW - 1
+    local boMY = boY + math.floor(boH/2)
+    pipe(mon, boMX, boMY, coreX, coreMY, colors.blue)
 
-    -- Legend
-    drawText(mon, padX+1, padY+padH-1, "[G]=ok [Y]=warn [R]=crit", colors.gray, colors.black)
+    -- Core -> Turbines (energy out)
+    local t1MX = t1X + math.floor(tW/2)
+    local t1MY = t1Y
+    pipe(mon, coreX + math.floor(coreW/2), coreMY+math.floor(coreH/2), t1MX, t1MY, colors.cyan)
 
-    -- SPS bottom
-    drawText(mon, 2, H, "SPS: " .. fmtBig(data.sps.outputRate) .. "/t", colors.purple, colors.black)
-end
+    local t2MX = t2X + math.floor(tW/2)
+    pipe(mon, t1MX, t1MY, t2MX, t2MY, colors.cyan)
 
--- ============================================================
---  Main render & update loop
--- ============================================================
+    -- Core -> SPS
+    local spsMX = spsX
+    local spsMY = spsY + math.floor(spsH/2)
+    pipe(mon, coreMX, coreMY-1, spsMX, spsMY, colors.purple)
 
-local function renderAll()
-    if alertActive then return end
-    renderCenter()
-    renderLeft()
-    renderFloor()
-end
+    -- ---- Animated dots on pipes ----
+    local ph = (dotPos % 30) / 30
+    energyDot(mon, coreMX, coreMY, fisX-1, coreMY, ph, colors.yellow)
+    energyDot(mon, boMX, boMY, coreX, coreMY, (ph+0.4)%1, colors.cyan)
+    energyDot(mon, coreX+math.floor(coreW/2), coreMY+2, t1MX, t1MY, (ph+0.2)%1, colors.lime)
+    energyDot(mon, coreMX, coreMY-1, spsMX, spsMY, (ph+0.6)%1, colors.purple)
 
-local function updateData(rawData)
-    if type(rawData) ~= "table" then return end
-    if rawData.energyCore     then data.energyCore     = rawData.energyCore     end
-    if rawData.fissionReactor then data.fissionReactor = rawData.fissionReactor end
-    if rawData.fusionReactor  then data.fusionReactor  = rawData.fusionReactor  end
-    if rawData.boiler         then data.boiler         = rawData.boiler         end
-    if rawData.turbines       then data.turbines       = rawData.turbines       end
-    if rawData.sps            then data.sps            = rawData.sps            end
-    if rawData.chemTank       then data.chemTank       = rawData.chemTank       end
-    if rawData.tick           then data.tick           = rawData.tick           end
-end
+    -- ---- Draw zones on top ----
+    -- Energy Core
+    zoneBox(mon, coreX, coreY, coreW, coreH, coreFg, coreBg,
+            "CORE", fmtPct(pct))
 
-local function checkAlerts()
-    if not dataReceived then return end  -- wait for first real packet
-    local dmg = data.fissionReactor.damage or 0
-    local pct = energyPct()
-    local shouldAlert = (dmg > 0) or (pct < 0.05)
-    if shouldAlert ~= alertActive then
-        triggerAlert(shouldAlert)
+    -- Fission
+    zoneBox(mon, fisX, fisY, fisW, fisH, fisFg, fisBg,
+            "FISS", string.format("%.0fK",frTemp))
+
+    -- Fusion
+    zoneBox(mon, fuX, fuY, fuW, fuH, fuFg, fuBg,
+            "FUSI", string.format("%.0fK",fuTemp))
+
+    -- Boiler
+    local boilPct = clamp((data.boiler.boilRate or 0)/math.max(data.boiler.maxBoilRate or 1,1),0,1)
+    local boBg = boilPct > 0.7 and colors.orange or colors.blue
+    zoneBox(mon, boX, boY, boW, boH, colors.white, boBg, "BOIL", fmtPct(boilPct))
+
+    -- Turbines
+    local function turbBg(idx)
+        local t = data.turbines[idx]
+        if not t then return colors.gray end
+        local p = clamp((t.steamFlow or 0)/math.max(t.maxSteamFlow or 1,1),0,1)
+        return p > 0.5 and colors.teal or colors.blue
+    end
+    zoneBox(mon, t1X, t1Y, tW, tH, colors.white, turbBg(1) or colors.gray, "TURB", "T1")
+    zoneBox(mon, t2X, t2Y, tW, tH, colors.white, turbBg(2) or colors.gray, "TURB", "T2")
+
+    -- SPS
+    local spsOnline = (data.sps.outputRate or 0) > 0
+    zoneBox(mon, spsX, spsY, spsW, spsH, colors.white,
+            spsOnline and colors.purple or colors.gray, "SPS",
+            fmtBig(data.sps.outputRate))
+
+    -- ---- Legend (bottom strip) ----
+    local ly = H - 1
+    put(mon, 3,  ly, "[BLUE]=CORE ",  colors.blue,   colors.black)
+    put(mon, 15, ly, "[GRN]=OK ",     colors.green,  colors.black)
+    put(mon, 24, ly, "[YLW]=WARN ",   colors.yellow, colors.black)
+    put(mon, 34, ly, "[RED]=CRIT ",   colors.red,    colors.black)
+    put(mon, 44, ly, "[PRP]=SPS",     colors.purple, colors.black)
+
+    -- Status
+    if not dataReceived then
+        put(mon, 3, H-2, ">> WAITING FOR DATA...", colors.yellow, colors.black)
+    else
+        put(mon, W-14, H-2, "TICK #"..data.tick, colors.green, colors.black)
     end
 end
 
--- Modem listener (coroutine)
+-- ============================================================
+--  Data update
+-- ============================================================
+local function updateData(raw)
+    if type(raw) ~= "table" then return end
+    local function merge(dst, src)
+        if type(src) ~= "table" then return end
+        for k, v in pairs(src) do dst[k] = v end
+    end
+    merge(data.energyCore,     raw.energyCore)
+    merge(data.fissionReactor, raw.fissionReactor)
+    merge(data.fusionReactor,  raw.fusionReactor)
+    merge(data.boiler,         raw.boiler)
+    merge(data.sps,            raw.sps)
+    merge(data.chemTank,       raw.chemTank)
+    if type(raw.turbines) == "table" then
+        data.turbines = raw.turbines
+    end
+    if raw.tick then data.tick = raw.tick end
+end
+
+-- ============================================================
+--  Main loops
+-- ============================================================
 local function modemLoop()
     while true do
-        local event, side, ch, rch, msg = os.pullEvent("modem_message")
+        local _, _, ch, _, msg = os.pullEvent("modem_message")
         if ch == 99 and type(msg) == "table" then
             updateData(msg)
-            dataReceived = true  -- first real packet received, alerts now allowed
+            dataReceived = true
         end
     end
 end
 
--- Tick loop (coroutine)
 local function tickLoop()
     while true do
-        blinkState  = not blinkState
-        animIdx     = (animIdx % #animDots) + 1
-        dotPos      = dotPos + 1
+        frameCount = frameCount + 1
+        blink   = not blink
+        dotPos  = dotPos + 1
+        animIdx = (frameCount % 3) + 1
 
         pushHistory(data.energyCore.transferRate or 0)
         queryME()
         checkAlerts()
-        renderAll()
+
+        if not alertActive then
+            local ok1 = pcall(renderCenter)
+            local ok2 = pcall(renderLeft)
+            local ok3 = pcall(renderFloor)
+        end
 
         os.sleep(0.5)
     end
@@ -731,10 +780,9 @@ end
 -- ============================================================
 --  Boot
 -- ============================================================
-
-print("CYBERPUNK HUD  |  Starting...")
-print("Monitors: L=monitor_24  C=monitor_22  F=monitor_25")
-print("Modem ch: 99  |  ME: meBridge_1")
-print("Press Ctrl+T to terminate.")
+print("CYBERPUNK HUD v2  |  Starting...")
+print("L=monitor_24  C=monitor_22  F=monitor_25")
+print("Modem ch:99   ME:meBridge_1")
+print("Ctrl+T to quit.")
 
 parallel.waitForAny(modemLoop, tickLoop)
